@@ -1,0 +1,60 @@
+name: Tidal BPM Sort
+
+on:
+  workflow_dispatch:
+      inputs:
+        source_url:
+          description: "Album or playlist URL (or bare ID)"
+          required: true
+          type: string
+        sort:
+          description: "Sort after adding?"
+          required: false
+          type: choice
+          default: "none"
+          options:
+            - "none"
+            - "updated"
+            - "all"
+            - "1"
+            - "2"
+            - "3"
+
+jobs:
+  bpm-sort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      
+      - name: Install dependencies
+        run: pip install tidalapi
+
+      - name: Run BPM sorter
+        env:
+          # Tidal oauth token stored as a single json secret
+          TIDAL_SESSION_JSON: ${{ secrets.TIDAL_SESSION_JSON }}
+          # BPM playlist UUIDs
+          BPM_PLAYLIST_110: ${{ secrets.BPM_PLAYLIST_110 }}
+          BPM_PLAYLIST_120: ${{ secrets.BPM_PLAYLIST_120 }}
+          BPM_PLAYLIST_130: ${{ secrets.BPM_PLAYLIST_130 }}
+          # Inputs from the dispatch form
+          SOURCE_URL: ${{ inputs.source_url }}
+          SORT_CHOICE: ${{ inputs.sort }}
+        run: python bpm_handler.py
+      
+      # write the token back to secrets
+      - name: Refresh token secret
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+        run: |
+          if [ -f tidal_token.json ]; then
+            gh secret set TIDAL_SESSION_JSON --body "$(cat tidal_token.json)"
+            echo "Token secret updated"
+          else
+            echo "No token file found, skipping secret update"
+            fi
