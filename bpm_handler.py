@@ -2,12 +2,13 @@
 """
 Local usage: python bpm_handler.py
 """
-
+from datetime import datetime
 import json
 import os
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 
 try:
@@ -38,22 +39,39 @@ def save_session(session: tidalapi.Session) -> None:
     }
     TOKEN_FILE.write_text(json.dumps(data))
 
-def load_session(session: tidalapi.Session, data: dict) -> bool:
+def load_session(session: tidalapi.Session, token_data: dict) -> bool:
+    expiry = (
+        datetime.fromisoformat(token_data["expiry_time"])
+        if token_data.get("expiry_time") else None
+    )
+    session.load_oauth_session(
+        token_data["token_type"],
+        token_data["access_token"],
+        token_data["refresh_token"],
+        expiry,
+    )
+    return session.check_login()
+
+
+def try_load_token(session: tidalapi.Session, token_data: dict, label: str) -> bool:
     try:
-        from datetime import datetime
-        expiry = (
-            datetime.fromisoformat(data["expiry_time"])
-            if data.get("expiry_time") else None
-        )
-        session.load_oauth_session(
-            data["token_type"],
-            data["access_token"],
-            data["refresh_token"],
-            expiry,
-        )
-        return session.check_login()
-    except Exception:
+        ok = load_session(session, token_data)
+        if ok:
+            return True
+        print(f"check_login returned False for {label}, attempting token refresh...")
+        try:
+            session.token_refresh(token_data["refresh_token"])
+            if session.check_login():
+                print("Token refreshed successfully")
+                return True
+        except Exception as refresh_err:
+            print(f"Token refresh also failed: {refresh_err}")
         return False
+    except Exception:
+        print(f"Failed to load {label}. Full traceback:")
+        traceback.print_exc()
+        return False
+
 
 def get_session() -> tidalapi.Session:
     session = tidalapi.Session()
@@ -62,36 +80,41 @@ def get_session() -> tidalapi.Session:
     ci_token = os.getenv("TIDAL_SESSION_JSON")
     if ci_token:
         try:
-            date = json.loads(ci_token)
-            if load_session(session, data):
-                print("Loaded session from TIDAL_SESSION_JSON")
-                save_session(session)
-                return session
-        except Exception as e:
-            sys.exit(f"Failed to load TIDAL_SESSION_JSON: {e}")
-
+            token_data = json.loads(ci_token)
+        except json.JSONDecodeError as e:
+            sys.exit(
+                f"TIDAL_SESSION_JSON is not valid JSON: {e}\n"
+                "Rerun locally and copy the contents of tidal_token.json and update secret."
+            )
+        if try_load_token(session, token_data, "TIDAL_SESSION_JSON"):
+            print("Loaded session from TIDAL_SESSION_JSON")
+            save_session(session)
+            return session
+        else:
+            sys.exit(
+                "Could not authenticate. Rerun locally and update TIDAL_SESSION_JSON with new tidal_token.json"
+            )
     # local: try saved token file
     if TOKEN_FILE.exists():
         try:
-            data = json.loads(TOKEN_FILE.read_text())
-            if load_session(session, data):
+            token_data = json.loads(TOKEN_FILE.read_text())
+            if try_load_token(session, token_data, TOKEN_FILE.name):
                 print("Restored saved session")
-                save_session(session) # refresh token may have rotated
+                save_session(session)
                 return session
         except Exception:
-            pass
+            print(f"Could not read {TOKEN_FILE}, will re-authenticate")
 
     # local fallback: interactive oauth
     if os.getenv("CI"):
         sys.exit(
-            "CI mode: no valid TIDAL_SESSION_JSON found. "
-            "Run locally first to generate a token, then add it as a secret."
+            "CI mode: no TIDAL_SESSION_JSON found, run locally to generate token and add as secret."
         )
+
     print("No saved session found, starting oauth login...")
-    print("Approve the following link\n")
     session.login_oauth_simple()
     save_session(session)
-    print("Logged in and session saved to tidal_token.json")
+    print("Logged in and session daved to tidal_token.json")
     return session
 
 # BPM HELPERS
