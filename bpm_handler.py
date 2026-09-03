@@ -289,18 +289,11 @@ def sort_playlist_by_bpm(
     playlist = session.playlist(playlist.id)
     tracks = playlist.tracks()
 
-    for _ in range(5):
-        time.sleep(1)
-        playlist = session.playlist(playlist.id)
-        fresh = playlist.tracks()
-        if len(fresh) == len(tracks):
-            break
-        print(f"Playlist count changed, ({len(tracks)} -> {len(fresh)})")
-
     if not tracks:
         print("playlist is empty, nothing to sort")
         return
 
+    # 1. Fetch BPMs
     track_bpm: list[tuple[int, int, str]] = []
     for t in tracks:
         bpm = get_bpm(t, session, overrides)
@@ -309,27 +302,16 @@ def sort_playlist_by_bpm(
 
     track_bpm.sort()
 
+    # 2. Clear tracks by index in reverse order
     print(f"Clearing {len(tracks)} tracks...")
-    removed_ids: set[int] = set()
-    for _, tid, _ in track_bpm:
-        if tid not in removed_ids:
-            try:
-                playlist.remove_by_id(tid)
-                removed_ids.add(tid)
-            except Exception as e:
-                if "412" in str(e):
-                    # ETag went stale mid-loop — reload and retry once
-                    playlist = session.playlist(playlist.id)
-                    try:
-                        playlist.remove_by_id(tid)
-                        removed_ids.add(tid)
-                    except Exception as e2:
-                        print(f"    Warning: couldn't remove track {tid}: {e2}")
-                else:
-                    print(f"Couldn't remove track {tid}: {e}")
-            time.sleep(RATE_LIMIT_DELAY)
+    for i in range(len(tracks) - 1, -1, -1):
+        try:
+            playlist.remove_by_index(i)
+        except Exception as e:
+            print(f"    Warning: couldn't remove track at index {i}: {e}")
+        time.sleep(RATE_LIMIT_DELAY)
 
-    # Reload once more — ETag changes again after the removes
+    # 3. Reload and append sorted tracks
     playlist = session.playlist(playlist.id)
     playlist.add([tid for _, tid, _ in track_bpm])
 
