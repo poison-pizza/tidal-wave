@@ -2,23 +2,28 @@ name: Tidal BPM Sort
 
 on:
   workflow_dispatch:
-      inputs:
-        source_url:
-          description: "Album or playlist URL (or bare ID)"
-          required: true
-          type: string
-        sort:
-          description: "Sort after adding?"
-          required: false
-          type: choice
-          default: "none"
-          options:
-            - "none"
-            - "updated"
-            - "all"
-            - "1"
-            - "2"
-            - "3"
+    inputs:
+      source_url:
+        description: "Album or playlist URL (or bare ID)"
+        required: true
+        type: string
+      sort:
+        description: "Sort after adding?"
+        required: false
+        type: choice
+        default: "none"
+        options:
+          - "none"
+          - "updated"
+          - "all"
+          - "1"
+          - "2"
+          - "3"
+      manual_bpms:
+        description: "One-off BPM overrides: trackid:bpm,trackid2:bpm2 (not saved permanently)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   bpm-sort:

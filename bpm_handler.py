@@ -2,6 +2,7 @@
 """
 Local usage: python bpm_handler.py
 """
+
 from datetime import datetime
 import json
 import os
@@ -18,6 +19,7 @@ except ImportError:
 
 # CONFIG
 
+
 def get_bpm_playlists() -> dict[tuple[int, int], str]:
     return {
         (110, 119): os.getenv("BPM_PLAYLIST_110", "YOUR_PLAYLIST_UUID_110"),
@@ -25,24 +27,34 @@ def get_bpm_playlists() -> dict[tuple[int, int], str]:
         (130, 139): os.getenv("BPM_PLAYLIST_130", "YOUR_PLAYLIST_UUID_130"),
     }
 
+
 TOKEN_FILE = Path("tidal_token.json")
-RATE_LIMIT_DELAY = 0.1      # seconds between api calls, raise if you hit rate limits
+OVERRIDES_FILE = Path("bpm_overrides.json")
+RATE_LIMIT_DELAY = 0.1  # seconds between api calls, raise if you hit rate limits
 
 # AUTH
 
+
 def save_session(session: tidalapi.Session) -> None:
-    data = {
-        "token_type": session.token_type,
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-        "expiry_time": session.expiry_time.isoformat() if session.expiry_time else None,
-    }
-    TOKEN_FILE.write_text(json.dumps(data))
+    TOKEN_FILE.write_text(
+        json.dumps(
+            {
+                "token_type": session.token_type,
+                "access_token": session.access_token,
+                "refresh_token": session.refresh_token,
+                "expiry_time": (
+                    session.expiry_time.isoformat() if session.expiry_time else None
+                ),
+            }
+        )
+    )
+
 
 def load_session(session: tidalapi.Session, token_data: dict) -> bool:
     expiry = (
         datetime.fromisoformat(token_data["expiry_time"])
-        if token_data.get("expiry_time") else None
+        if token_data.get("expiry_time")
+        else None
     )
     session.load_oauth_session(
         token_data["token_type"],
@@ -55,8 +67,7 @@ def load_session(session: tidalapi.Session, token_data: dict) -> bool:
 
 def try_load_token(session: tidalapi.Session, token_data: dict, label: str) -> bool:
     try:
-        ok = load_session(session, token_data)
-        if ok:
+        if load_session(session, token_data):
             return True
         print(f"check_login returned False for {label}, attempting token refresh...")
         try:
@@ -117,22 +128,80 @@ def get_session() -> tidalapi.Session:
     print("Logged in and session daved to tidal_token.json")
     return session
 
+
+# ── BPM OVERRIDES ─────────────────────────────────────────────────────────────
+
+
+def load_overrides() -> dict[str, dict]:
+    """
+    Load manual BPM overrides from bpm_overrides.json.
+    Keys are track IDs as strings; values are dicts with at least {"bpm": int}.
+    """
+    if OVERRIDES_FILE.exists():
+        try:
+            return json.loads(OVERRIDES_FILE.read_text())
+        except Exception as e:
+            print(f"Warning: could not read {OVERRIDES_FILE}: {e}")
+    return {}
+
+
+def save_overrides(overrides: dict[str, dict]) -> None:
+    OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
+
+
+def parse_manual_bpms(raw: str) -> dict[str, dict]:
+    """
+    Parse the MANUAL_BPMS env var / workflow input.
+    Format: "trackid1:120,trackid2:130"
+    Returns a partial overrides dict suitable for merging.
+    """
+    result: dict[str, dict] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            print(
+                f"  Warning: ignoring malformed MANUAL_BPMS entry '{pair}' (expected trackid:bpm)"
+            )
+            continue
+        tid, bpm_str = pair.split(":", 1)
+        try:
+            result[tid.strip()] = {
+                "bpm": int(bpm_str.strip()),
+                "title": "CI manual input",
+            }
+        except ValueError:
+            print(f"  Warning: ignoring non-integer BPM in '{pair}'")
+    return result
+
+
 # BPM HELPERS
 
-def get_bpm(track: tidalapi.Track, session: tidalapi.Session) -> int | None:
-    # approach 1: named attribute (present in some tidalapi builds)
+
+def get_bpm(
+    track: tidalapi.Track,
+    session: tidalapi.Session,
+    overrides: dict[str, dict] | None = None,
+) -> int | None:
+    # Overrides take priority
+    if overrides and str(track.id) in overrides:
+        return int(overrides[str(track.id)]["bpm"])
+
+    # tidalapi attribute (present in some builds)
     bpm = getattr(track, "bpm", None)
     if bpm is not None and int(bpm) > 0:
         return int(bpm)
 
-    # approach 2: raw api call
+    # Raw API call fallback
     try:
         raw = session.request.request("GET", f"tracks/{track.id}").json()
-        bpm - raw.get("bpm")
+        bpm = raw.get("bpm")
         if bpm and int(bpm) > 0:
             return int(bpm)
     except Exception:
         pass
+
     return None
 
 
@@ -142,7 +211,9 @@ def bpm_range_for(bpm: int, playlists: dict) -> tuple[int, int] | None:
             return (lo, hi)
     return None
 
+
 # INPUT PARSING
+
 
 def parse_source(raw: str, session: tidalapi.Session):
     s = raw.strip().rstrip("/")
@@ -156,22 +227,27 @@ def parse_source(raw: str, session: tidalapi.Session):
         return "playlist", session.playlist(playlist_match.group(1))
     if re.fullmatch(r"\d+", s):
         return "album", session.album(int(s))
-    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.IGNORECASE):
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        s,
+        re.IGNORECASE,
+    ):
         return "playlist", session.playlist(s)
 
-    raise ValueError(
-        f"Couldn't parse '{s}' as a Tidal album/playlist url or id."
-    )
+    raise ValueError(f"Couldn't parse '{s}' as a Tidal album/playlist url or id.")
+
 
 # PLAYLIST OPERATIONS
+
 
 def get_existing_ids(playlist: tidalapi.Playlist) -> set[int]:
     return {t.id for t in playlist.tracks()}
 
 
 def sort_playlist_by_bpm(
-        playlist: tidalapi.UserPlaylist,
-        session: tidalapi.Session,
+    playlist: tidalapi.UserPlaylist,
+    session: tidalapi.Session,
+    overrides: dict[str, dict] | None = None,
 ) -> None:
     print(f"\n Sorting {playlist.name} by BPM...")
     tracks = playlist.tracks()
@@ -182,7 +258,7 @@ def sort_playlist_by_bpm(
 
     track_bpm: list[tuple[int, int, str]] = []
     for t in tracks:
-        bpm = get_bpm(t, session)
+        bpm = get_bpm(t, session, overrides)
         track_bpm.append((bpm if bpm else 9999, t.id, t.name))
         time.sleep(RATE_LIMIT_DELAY)
 
@@ -199,28 +275,27 @@ def sort_playlist_by_bpm(
                 print(f"Couldn't remove track {tid}: {e}")
             time.sleep(RATE_LIMIT_DELAY)
 
-    sorted_ids = [tid for _, tid, _ in track_bpm]
-    playlist.add(sorted_ids)
+    playlist.add([tid for _, tid, _ in track_bpm])
 
-    print(f"Sorted {len(sorted_ids)} tracks.")
-    for bpm_val, name in track_bpm:
+    print(f"Sorted {len(track_bpm)} tracks.")
+    for bpm_val, _, name in track_bpm:
         display = f"{bpm_val} BPM" if bpm_val != 9999 else "no BPM"
         print(f"{display:>10} {name}")
 
 
 def resolve_sort_choice(
-        choice: str,
-        bpm_playlists: dict[tuple[int, int], tidalapi.UserPlaylist],
-        modified: list[tuple[int, int]],
+    choice: str,
+    bpm_playlists: dict[tuple[int, int], tidalapi.UserPlaylist],
+    modified: list[tuple[int, int]],
 ) -> list[tuple[int, int]]:
     """
     parse a sort choice string into a list of playlist keys.
-    
+
     accepted values:
         none/'' = skip
         all = all 3 bpm playlists
         updated = only playlists touched this run
-        1/2/3 = by index    
+        1/2/3 = by index
     """
     c = choice.strip().lower()
     all_keys = list(bpm_playlists.keys())
@@ -240,7 +315,25 @@ def resolve_sort_choice(
                 keys.append(all_keys[idx])
     return keys
 
+
+def add_tracks_to_playlists(
+    tracks_to_add: dict[tuple[int, int], list[tuple[int, str, int]]],
+    bpm_playlists: dict[tuple[int, int], tidalapi.UserPlaylist],
+    modified: list[tuple[int, int]],
+) -> None:
+    """Batch-add queued tracks to their target playlists."""
+    for key, items in tracks_to_add.items():
+        if not items:
+            continue
+        pl = bpm_playlists[key]
+        pl.add([tid for tid, _, _ in items])
+        print(f"✓ Added {len(items)} track(s) to '{pl.name}'")
+        if key not in modified:
+            modified.append(key)
+
+
 # MAIN
+
 
 def main() -> None:
     CI = bool(os.getenv("CI"))
@@ -252,14 +345,24 @@ def main() -> None:
     BPM_PLAYLISTS = get_bpm_playlists()
     placeholders = [pid for pid in BPM_PLAYLISTS.values() if pid.startswith("YOUR-")]
     if placeholders:
-        sys.exit(
-            "Missing playlist UUIDs, either hardcode or set env vars"
-        )
+        sys.exit("Missing playlist UUIDs, either hardcode or set env vars")
 
     session = get_session()
     print()
 
-    # load bpm target playlists
+    # Load overrides (committed file + any CI one-offs)
+    overrides = load_overrides()
+    if overrides:
+        print(f"  Loaded {len(overrides)} BPM override(s) from {OVERRIDES_FILE}")
+
+    if CI:
+        manual_raw = os.getenv("MANUAL_BPMS", "").strip()
+        if manual_raw:
+            ci_overrides = parse_manual_bpms(manual_raw)
+            overrides.update(ci_overrides)
+            print(f"  Applied {len(ci_overrides)} MANUAL_BPMS override(s) for this run")
+
+    # Load BPM target playlists
     bpm_playlists: dict[tuple[int, int], tidalapi.UserPlaylist] = {}
     for (lo, hi), pid in BPM_PLAYLISTS.items():
         pl = session.playlist(pid)
@@ -293,24 +396,27 @@ def main() -> None:
     }
     print()
 
-    # categorize tracks
-    to_add: dict[tuple[int, int], list[tuple[int, str, int]]] = {k: [] for k in BPM_PLAYLISTS}
-    skipped_no_bpm: list[str] = []
+    # Scan tracks
+    to_add: dict[tuple[int, int], list[tuple[int, str, int]]] = {
+        k: [] for k in BPM_PLAYLISTS
+    }
+    no_bpm_tracks: list[tidalapi.Track] = []  # full objects for local manual input
     skipped_out_of_range: list[str] = []
     skipped_duplicate: list[str] = []
 
     for track in tracks:
-        bpm = get_bpm(track, session)
+        bpm = get_bpm(track, session, overrides)
         time.sleep(RATE_LIMIT_DELAY)
 
         if bpm is None:
-            skipped_no_bpm.append(track.name)
+            no_bpm_tracks.append(track)
             continue
 
         key = bpm_range_for(bpm, BPM_PLAYLISTS)
         if key is None:
             skipped_out_of_range.append(f"{track.name} ({bpm} BPM)")
             continue
+
         if track.id in existing[key]:
             skipped_duplicate.append(f"{track.name} ({bpm} BPM)")
             continue
@@ -320,29 +426,80 @@ def main() -> None:
         lo, hi = key
         print(f" + {bpm:>3} BPM {track.name} -> {lo}-{hi}")
 
-    # add to playlists
+    # Add first-pass tracks
     print()
     modified: list[tuple[int, int]] = []
-    for key, items in to_add.items():
-        if not items:
-            continue
-        pl = bpm_playlists[key]
-        pl.add([tid for tid, _, _ in items])
-        print(f"Added {len(items)} track(s) to '{pl.name}'")
-        modified.append(key)
+    add_tracks_to_playlists(to_add, bpm_playlists, modified)
 
     # summary
     print(f"\nSummary")
     print(f"Added: {sum(len(v) for v in to_add.values())}")
     print(f"Already present: {len(skipped_duplicate)}")
     print(f"Out of range: {len(skipped_out_of_range)}")
-    print(f"No BPM data: {len(skipped_no_bpm)}")
-    if skipped_no_bpm:
-        print(f"\n Tracks with no BPM data:")
-        for name in skipped_no_bpm:
-            print(f" - {name}")
+    print(f"No BPM data: {len(no_bpm_tracks)}")
+    if no_bpm_tracks:
+        for t in no_bpm_tracks:
+            override_note = " (override exists)" if str(t.id) in overrides else ""
+            print(f"    - {t.name}{override_note}")
 
-    # sort
+    # ── Manual BPM entry (local mode only) ───────────────────────────────────
+    if not CI and no_bpm_tracks:
+        unentered = [t for t in no_bpm_tracks if str(t.id) not in overrides]
+        if unentered:
+            print(f"\n{len(unentered)} track(s) have no BPM data anywhere.")
+            fill = input("Enter BPMs manually now? (y/n): ").strip().lower()
+            if fill == "y":
+                override_to_add: dict[tuple[int, int], list[tuple[int, str, int]]] = {
+                    k: [] for k in BPM_PLAYLISTS
+                }
+                newly_saved = 0
+
+                for track in unentered:
+                    raw_bpm = input(
+                        f"  BPM for '{track.name}' (Enter to skip): "
+                    ).strip()
+                    if not raw_bpm:
+                        continue
+                    try:
+                        bpm = int(raw_bpm)
+                    except ValueError:
+                        print("    Not a number, skipping.")
+                        continue
+
+                    # Save to overrides
+                    overrides[str(track.id)] = {
+                        "bpm": bpm,
+                        "title": track.name,
+                        "artist": (
+                            track.artist.name
+                            if hasattr(track, "artist") and track.artist
+                            else ""
+                        ),
+                    }
+                    newly_saved += 1
+
+                    # Queue for adding to playlist
+                    key = bpm_range_for(bpm, BPM_PLAYLISTS)
+                    if key is None:
+                        print(
+                            f"    {bpm} BPM — out of range, won't be added to a playlist"
+                        )
+                        continue
+                    if track.id in existing[key]:
+                        print(f"    Already in playlist")
+                        continue
+                    override_to_add[key].append((track.id, track.name, bpm))
+                    existing[key].add(track.id)
+                    lo, hi = key
+                    print(f"    → queued for {lo}–{hi} playlist")
+
+                if newly_saved:
+                    save_overrides(overrides)
+                    print(f"\n✓ Saved {newly_saved} override(s) to {OVERRIDES_FILE}")
+                    print("  Commit this file to your repo so CI runs pick it up.\n")
+                    add_tracks_to_playlists(override_to_add, bpm_playlists, modified)
+
+    # ── Sort ─────────────────────────────────────────────────────────────────
     if CI:
         sort_choice = os.getenv("SORT_CHOICE", "none")
         keys_to_sort = resolve_sort_choice(sort_choice, bpm_playlists, modified)
@@ -350,19 +507,19 @@ def main() -> None:
         print()
         print("Sort BPM playlists by BPM?")
         for i, ((lo, hi), pl) in enumerate(bpm_playlists.items(), start=1):
-            tag = " <- updated this run" if (lo, hi) in modified else ""
-            print(f" {i}) {pl.name}{tag}")
-        print(" updated) Only updated playlists")
-        print(" all) All playlists")
-        print(" n) Skip")
-        choice = input("Choice: ").strip()
-        keys_to_sort = resolve_sort_choice(choice, bpm_playlists, modified)
+            tag = " ← updated this run" if (lo, hi) in modified else ""
+            print(f"  {i}) {pl.name}{tag}")
+        print("  updated) Only updated playlists")
+        print("  all)     All playlists")
+        print("  n)       Skip")
+        keys_to_sort = resolve_sort_choice(
+            input("Choice: ").strip(), bpm_playlists, modified
+        )
 
     for key in keys_to_sort:
-        sort_playlist_by_bpm(bpm_playlists[key], session)
+        sort_playlist_by_bpm(bpm_playlists[key], session, overrides)
 
     print("\nDone")
-
 
 
 if __name__ == "__main__":
