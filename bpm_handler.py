@@ -342,6 +342,13 @@ def add_tracks_to_playlists(
         if not items:
             continue
         pl = bpm_playlists[key]
+        current_ids = get_existing_ids(pl)
+        new_items = [(tid, name, bpm) for tid, name, bpm in items if tid not in current_ids]
+        dupes = len(items) - len(new_items)
+        if dupes:
+            print(f"Skipped {dupes} deuplicate(s) already in '{pl.name}'")
+        if not new_items:
+            continue
         pl.add([tid for tid, _, _ in items])
         print(f"✓ Added {len(items)} track(s) to '{pl.name}'")
         if key not in modified:
@@ -359,7 +366,7 @@ def main() -> None:
     print("=" * 20)
 
     BPM_PLAYLISTS = get_bpm_playlists()
-    placeholders = [pid for pid in BPM_PLAYLISTS.values() if pid.startswith("YOUR-")]
+    placeholders = [pid for pid in BPM_PLAYLISTS.values() if pid.startswith("YOUR_")]
     if placeholders:
         sys.exit("Missing playlist UUIDs, either hardcode or set env vars")
 
@@ -472,7 +479,7 @@ def main() -> None:
 
                 for track in unentered:
                     raw_bpm = input(
-                        f"  BPM for '{track.name}' (Enter to skip): "
+                        f"  BPM for '{track.name}' - {track.artist} (Enter to skip): "
                     ).strip()
                     if not raw_bpm:
                         continue
