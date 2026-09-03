@@ -188,29 +188,55 @@ def get_bpm(
     session: tidalapi.Session,
     overrides: dict[str, dict] | None = None,
 ) -> int | None:
-    # Overrides take priority
+    # 1. Overrides take priority
     if overrides and str(track.id) in overrides:
         return int(overrides[str(track.id)]["bpm"])
 
-    # tidalapi attribute (present in some builds)
+    # 2. tidalapi attribute (present on pre-loaded track objects)
     bpm = getattr(track, "bpm", None)
     if bpm is not None and int(bpm) > 0:
         return int(bpm)
 
-    # Raw API call fallback
+    country = session.country_code or "US"
+
+    # 3. Raw API call using direct track ID
     try:
         raw = session.request.request(
             "GET", 
             f"tracks/{track.id}",
-            params={"countryCode": session.country_code}
-            ).json()
+            params={"countryCode": country}
+        ).json()
         bpm = raw.get("bpm")
         if bpm and int(bpm) > 0:
             return int(bpm)
-        print(f"[debug] no bpm found for {track.name}, raw keys: {list(raw.keys())}")
-        print(f"[debug] full response: {raw}")
-    except Exception as e:
-        print(f"[debug] api call failed for {track.name}: {e}")
+    except Exception:
+        # 4. Fallback: If track ID is delisted/404, search for active track version
+        try:
+            artist_name = track.artist.name if hasattr(track, "artist") and track.artist else ""
+            query = f"{track.name} {artist_name}".strip()
+            
+            search_results = session.search(query, models=[tidalapi.Track], limit=1)
+            found_tracks = search_results.get("tracks", []) if isinstance(search_results, dict) else getattr(search_results, "tracks", [])
+
+            if found_tracks:
+                active_track = found_tracks[0]
+                
+                # Check active track attribute
+                bpm = getattr(active_track, "bpm", None)
+                if bpm and int(bpm) > 0:
+                    return int(bpm)
+
+                # Query active track endpoint
+                raw = session.request.request(
+                    "GET",
+                    f"tracks/{active_track.id}",
+                    params={"countryCode": country}
+                ).json()
+                bpm = raw.get("bpm")
+                if bpm and int(bpm) > 0:
+                    return int(bpm)
+        except Exception as fallback_err:
+            print(f"[debug] search fallback failed for {track.name}: {fallback_err}")
 
     return None
 
