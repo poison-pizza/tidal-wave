@@ -376,7 +376,7 @@ def main() -> None:
     # Load overrides (committed file + any CI one-offs)
     overrides = load_overrides()
     if overrides:
-        print(f"  Loaded {len(overrides)} BPM override(s) from {OVERRIDES_FILE}")
+        print(f"Loaded {len(overrides)} BPM override(s) from {OVERRIDES_FILE}\n")
 
     if CI:
         manual_raw = os.getenv("MANUAL_BPMS", "").strip()
