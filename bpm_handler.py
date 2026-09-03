@@ -203,8 +203,10 @@ def get_bpm(
         bpm = raw.get("bpm")
         if bpm and int(bpm) > 0:
             return int(bpm)
-    except Exception:
-        pass
+        print(f"[debug] no bpm found for {track.name}, raw keys: {list(raw.keys())}")
+        print(f"[debug] full response: {raw}")
+    except Exception as e:
+        print(f"[debug] api call failed for {track.name}: {e}")
 
     return None
 
@@ -256,6 +258,14 @@ def sort_playlist_by_bpm(
     print(f"\n Sorting {playlist.name} by BPM...")
     playlist = session.playlist(playlist.id)
     tracks = playlist.tracks()
+
+    for _ in range(5):
+        time.sleep(1)
+        playlist = session.playlist(playlist.id)
+        fresh = playlist.tracks()
+        if len(fresh) == len(tracks):
+            break
+        print(f"Playlist count changed, ({len(tracks)} -> {len(fresh)})")
 
     if not tracks:
         print("playlist is empty, nothing to sort")
