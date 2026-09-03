@@ -123,7 +123,11 @@ def get_session() -> tidalapi.Session:
         )
 
     print("No saved session found, starting oauth login...")
-    session.login_oauth_simple()
+    try:
+        session.login_oauth()  # opens browser automatically
+    except Exception:
+        # Fallback if browser can't open (e.g. headless environment)
+        session.login_oauth_simple()
     save_session(session)
     print("Logged in and session daved to tidal_token.json")
     return session
@@ -250,6 +254,7 @@ def sort_playlist_by_bpm(
     overrides: dict[str, dict] | None = None,
 ) -> None:
     print(f"\n Sorting {playlist.name} by BPM...")
+    playlist = session.playlist(playlist.id)
     tracks = playlist.tracks()
 
     if not tracks:
@@ -272,9 +277,20 @@ def sort_playlist_by_bpm(
                 playlist.remove_by_id(tid)
                 removed_ids.add(tid)
             except Exception as e:
-                print(f"Couldn't remove track {tid}: {e}")
+                if "412" in str(e):
+                    # ETag went stale mid-loop — reload and retry once
+                    playlist = session.playlist(playlist.id)
+                    try:
+                        playlist.remove_by_id(tid)
+                        removed_ids.add(tid)
+                    except Exception as e2:
+                        print(f"    Warning: couldn't remove track {tid}: {e2}")
+                else:
+                    print(f"Couldn't remove track {tid}: {e}")
             time.sleep(RATE_LIMIT_DELAY)
 
+    # Reload once more — ETag changes again after the removes
+    playlist = session.playlist(playlist.id)
     playlist.add([tid for _, tid, _ in track_bpm])
 
     print(f"Sorted {len(track_bpm)} tracks.")
