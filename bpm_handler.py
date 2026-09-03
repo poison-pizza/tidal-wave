@@ -346,10 +346,10 @@ def add_tracks_to_playlists(
         new_items = [(tid, name, bpm) for tid, name, bpm in items if tid not in current_ids]
         dupes = len(items) - len(new_items)
         if dupes:
-            print(f"Skipped {dupes} deuplicate(s) already in '{pl.name}'")
+            print(f"Skipped {dupes} duplicate(s) already in '{pl.name}'")
         if not new_items:
             continue
-        pl.add([tid for tid, _, _ in items])
+        pl.add([tid for tid, _, _ in new_items])
         print(f"✓ Added {len(items)} track(s) to '{pl.name}'")
         if key not in modified:
             modified.append(key)
