@@ -199,7 +199,11 @@ def get_bpm(
 
     # Raw API call fallback
     try:
-        raw = session.request.request("GET", f"tracks/{track.id}").json()
+        raw = session.request.request(
+            "GET", 
+            f"tracks/{track.id}",
+            params={"countryCode": session.country_code}
+            ).json()
         bpm = raw.get("bpm")
         if bpm and int(bpm) > 0:
             return int(bpm)
